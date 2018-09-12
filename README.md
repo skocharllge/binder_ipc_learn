@@ -9,6 +9,6 @@ Yet to implement(TO BE DONE)
 
 2.Implement cirucular buffer of structures so that process can communicate using circ buffer in kernel
 
-3.Implement white list black list map of processes communicating
+3.Implement white list & black list map of processes communicating
 
-4.Implement ioctl to update the map and allow IPC if it is part of whitelist and block if it is part of blacklist
+4.Implement ioctl to update the black list map and allow IPC if it is part of whitelist and block if it is part of blacklist

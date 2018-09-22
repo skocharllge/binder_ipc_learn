@@ -10,6 +10,11 @@
 #include <linux/uaccess.h>
 #include <linux/circ_buf.h>
 #include <linux/sched.h>
+#include <linux/dma-mapping.h>
+
+#include <linux/syscalls.h>
+#include <linux/file.h>
+#include <linux/fcntl.h>
 
 /* CONSTANTS */
 #define BUF_LENGTH  1024
@@ -24,7 +29,16 @@ static int device_open(struct inode *, struct file *);
 static int device_close(struct inode *, struct file *);
 static ssize_t device_read(struct file *, char *, size_t, loff_t *);
 static ssize_t device_write(struct file *, const char *, size_t, loff_t *); 
+static int device_mmap(struct file *file, struct vm_area_struct *vma);
 static void free_kalloc(void);
+static int dev_count = 0;
+
+struct mmap_info {
+    char *data; /* the data */
+    int reference;       /* how many times it is mmapped */
+};
+
+struct mmap_info *info = NULL;
 
 /* Global structures */
 static struct file_operations fops = {
@@ -32,7 +46,8 @@ static struct file_operations fops = {
 	.open = device_open,
 	.release = device_close,
 	.write = device_write,
-	.read = device_read
+	.read = device_read,
+	.mmap = device_mmap
 };
 
 
@@ -98,7 +113,6 @@ static int __init mod_init(void)
 	}
 	// initialize semaphore
 	sema_init(&bdev.sem, 1);
-
 	printk(KERN_ALERT "\n%s: loaded module", NAME);
 	return 0;
 }
@@ -112,12 +126,36 @@ static void __exit mod_exit(void)
 	printk(KERN_ALERT "\n%s: unloaded module", NAME); 
 }
 
+int init_mmap_info(struct file *file)
+{
+	unsigned long order;
+	printk(KERN_ALERT "\n%s: opened device", NAME);	
+	info = kmalloc(sizeof(struct mmap_info), GFP_KERNEL);
+	/* obtain new memory */
+	order = get_order(1024*1024);
+	pr_info("order %ld\n", order);
+	//info->data = (char *)get_zeroed_page(GFP_KERNEL);
+	info->data = (char *)__get_free_pages(GFP_KERNEL, order);
+	memset(info->data, 0, (1024*1024));
+	/* writing something to it */
+	//memcpy(info->data, "hello from kernel this is file: ", 32);
+	//memcpy(info->data + 32, file->f_dentry->d_name.name,
+	//		strlen(file->f_dentry->d_name.name));
+	return 0;
+}
 /******************************************************************************
  Opens the character device.
 ******************************************************************************/
 static int device_open(struct inode *inode, struct file *file)
 { 
-	printk(KERN_ALERT "\n%s: opened device", NAME);	
+	if(!dev_count)
+	{
+		init_mmap_info(file);
+	}
+	dev_count++;
+	pr_info("dev_count %d\n", dev_count);
+
+	file->private_data = info;
 	return 0;
 }
 
@@ -126,8 +164,76 @@ static int device_open(struct inode *inode, struct file *file)
 ******************************************************************************/
 static int device_close(struct inode *inode, struct file *file)
 {
+	struct mmap_info *info = file->private_data;
 	printk(KERN_INFO "\n%s: device close", NAME);	
+	if(dev_count == 1)
+	{
+		free_pages((unsigned long)info->data, get_order(1024*1024));
+		//free_page((unsigned long)info->data);
+		kfree(info);
+		file->private_data = NULL;
+	}
+	dev_count--;
 	return 0;
+}
+
+/* keep track of how many times it is mmapped */
+void mmap_open(struct vm_area_struct *vma)
+{
+    struct mmap_info *info = (struct mmap_info *)vma->vm_private_data;
+    info->reference++;
+}
+
+/* decrement reference cout */
+void mmap_close(struct vm_area_struct *vma)
+{
+    struct mmap_info *info = (struct mmap_info *)vma->vm_private_data;
+    info->reference--;
+}
+
+int mmap_fault(struct vm_fault *vmf)
+{
+	struct vm_area_struct *vma = vmf->vma;
+	static struct page *page;
+	struct mmap_info *info;
+	unsigned long address = (unsigned long)vmf->address;
+	/* is the address valid? */
+	if (address > vma->vm_end) {
+		pr_info("invalid address");
+		return VM_FAULT_SIGBUS;
+	}
+	/* the data is in vma->vm_private_data */
+	info = (struct mmap_info *)vma->vm_private_data;
+	if (!info->data) {
+		pr_info("no data");
+		return VM_FAULT_SIGBUS;
+	}
+
+	page = virt_to_page(info->data);
+	/* increment the reference count of this page */
+	get_page(page);
+	/* type is the page fault type */
+	vmf->page = page;
+	return 0;
+}
+
+struct vm_operations_struct mmap_vm_ops = {
+    .open =     mmap_open,
+    .close =    mmap_close,
+    .fault =    mmap_fault,
+};
+
+static int device_mmap(struct file *file, struct vm_area_struct *vma)
+{
+	pr_info("my mmap called\n");
+	vma->vm_ops = &mmap_vm_ops;
+	vma->vm_flags |= VM_DONTCOPY | VM_MIXEDMAP;
+	vma->vm_flags &= ~VM_MAYWRITE;
+	/* assign the file private data to the vm private data */
+	vma->vm_private_data = file->private_data;
+	mmap_open(vma);
+	return 0;
+
 }
 
 /******************************************************************************
@@ -155,11 +261,9 @@ static ssize_t device_write(struct file *file, const char *src, size_t count,
 
 	printk(KERN_INFO "\n%s %s: writing to device %zu", NAME, current->comm,count);
 	
-	
 		
 	if (copy_from_user(bdev.cirBuf, (struct data*)src, count) != 0)
                return -EFAULT;
-
 
 	// free semaphore
 	up(&bdev.sem);

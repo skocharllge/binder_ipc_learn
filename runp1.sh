@@ -16,7 +16,7 @@ then
 	fi
 
 	# install the new version of the kernel module
-	sudo insmod kernel_src/ipclearn.ko
+	sudo insmod kernelSrc/ipclearn.ko
 
 	# remove user's executable if it exists
 	[ -x process1/process1.c ] && rm process1/process1

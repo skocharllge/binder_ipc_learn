@@ -3,9 +3,9 @@ First step of implementation(DONE)
 
 Character driver to send across c struct's across process boundaries.
 
+Figuring out how to send huge data across process boundaries
 Yet to implement(TO BE DONE)
 
-1.Figuring out how to send huge data across process boundaries
 
 2.Implement cirucular buffer of structures so that process can communicate using circ buffer in kernel
 
